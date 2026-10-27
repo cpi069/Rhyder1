@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Blockworld Online</title>
+<style>
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#101827;color:#f4f7fb;font:15px system-ui,Arial,sans-serif}
+header{padding:14px 18px;background:#19263a;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+h1{font-size:22px;margin:0;letter-spacing:-.5px}small,.muted{color:#aabbd0}
+main{max-width:1050px;margin:auto;padding:14px}
+.panel{background:#19263a;border:1px solid #344860;border-radius:12px;padding:13px;margin-bottom:12px}
+button,input{font:inherit;border-radius:8px;border:1px solid #60718a;padding:9px 11px}
+button{cursor:pointer;background:#31435d;color:white;font-weight:650}button:hover{filter:brightness(1.15)}
+input{background:#0f1928;color:white;max-width:100%}
+#world{display:block;width:100%;height:auto;background:#9bd8e7;border-radius:10px;touch-action:manipulation}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.status{font-size:13px;color:#a6efb4}#roomCode{font-size:20px;font-weight:800;letter-spacing:2px}
+.blocks button[data-b="grass"]{background:#477c48}.blocks button[data-b="stone"]{background:#596779}.blocks button[data-b="wood"]{background:#895a35}.blocks button[data-b="sand"]{background:#b99a50;color:#17130a}.blocks button[data-b="water"]{background:#267da9}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.key{border:1px solid #3b5068;border-radius:10px;padding:10px;line-height:1.8}
+@media(max-width:600px){.grid{grid-template-columns:1fr}main{padding:8px}header{padding:12px}}
+</style>
+</head>
+<body>
+<header><div><h1>BLOCKWORLD <span style="color:#8bdf9c">ONLINE</span></h1><small>Build together, from different computers</small></div><div id="status" class="status">● Not connected</div></header>
+<main>
+<section class="panel">
+ <b>1. Start or join a room</b>
+ <p class="muted" style="font-size:13px;margin:5px 0 10px">Both players need internet access. The PeerJS cloud broker helps the browsers find each other; game updates are sent directly between peers.</p>
+ <div class="row"><button id="host">Create room</button><span id="roomLabel" class="muted">Room code:</span><span id="roomCode">—</span></div>
+ <div class="row" style="margin-top:9px"><input id="joinCode" placeholder="Enter friend's room code" autocomplete="off" maxlength="30"><button id="join">Join room</button><button id="disconnect">Disconnect</button></div>
+ <div id="notice" class="muted" style="margin-top:8px;font-size:13px">Create a room, then send your friend the code.</div>
+</section>
+<canvas id="world" width="900" height="550" tabindex="0" aria-label="Blockworld game"></canvas>
+<section class="panel">
+ <b>Block selector</b>
+ <div class="row blocks" style="margin-top:9px"><button data-b="grass">🟩 Grass</button><button data-b="stone">⬜ Stone</button><button data-b="wood">🟫 Wood</button><button data-b="sand">🟨 Sand</button><button data-b="water">🟦 Water</button><button id="newWorld">New world</button></div>
+</section>
+<section class="panel grid">
+ <div class="key"><b style="color:#92d9ff">🔵 YOU</b><br>Move: <b>W A S D</b> or arrow keys<br>Place block: <b>Q</b> or <b>Space</b><br>Break block: <b>E</b> or <b>Backspace</b></div>
+ <div class="key"><b style="color:#ffbd9b">🟠 FRIEND</b><br>Your friend's movements and building appear automatically when connected.<br><span class="muted">Tip: click the game first if keys don't respond.</span></div>
+</section>
+<p class="muted" style="font-size:12px">Prototype note: this is a lightweight isometric block sandbox, not a full 3D engine. Keep the host tab open while playing. For a public, always-on game, deploy this page to a static web host.</p>
+</main>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+(()=>{
+const cv=document.getElementById('world'),ctx=cv.getContext('2d');
+const status=document.getElementById('status'),notice=document.getElementById('notice'),roomCode=document.getElementById('roomCode');
+const N=18,W=900,H=550;
+const types={
+ grass:{top:'#72bb59',left:'#468747',right:'#579c49'},
+ stone:{top:'#a8b2bd',left:'#687887',right:'#8494a1'},
+ wood:{top:'#bd8950',left:'#81512d',right:'#9e6939'},
+ sand:{top:'#e8d18a',left:'#bba568',right:'#d0b979'},
+ water:{top:'#54b9e8',left:'#287da9',right:'#3899c5'}
+};
+let map=[],player={x:7,y:8,color:'#42b9ff',name:'YOU'},friend={x:10,y:9,color:'#ff9c68',name:'FRIEND'};
+let selected='grass',peer=null,conn=null,isHost=false,connected=false,held={};
+function newMap(){map=Array.from({length:N},()=>Array.from({length:N},()=>({type:Math.random()<.12?'stone':Math.random()<.10?'sand':'grass',h:0})));player={x:7,y:8,color:'#42b9ff',name:'YOU'};friend={x:10,y:9,color:'#ff9c68',name:'FRIEND'};draw();send({type:'world',map,friend});}
+function setStatus(s,ok=false){status.textContent=(ok?'● ':'● ')+s;status.style.color=ok?'#a6efb4':'#ffd08a'}
+function say(s){notice.textContent=s}
+function project(x,y,z=0){return{x:W/2+(x-y)*22,y:70+(x+y)*11-z*17}}
+function poly(points,fill,stroke){ctx.beginPath();ctx.moveTo(...points[0]);for(let i=1;i<points.length;i++)ctx.lineTo(...points[i]);ctx.closePath();ctx.fillStyle=fill;ctx.fill();if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=.7;ctx.stroke()}}
+function cube(x,y,z,type){let t=types[type]||types.grass,p=project(x,y,z),a=22,b=11,c=17;poly([[p.x,p.y],[p.x+a,p.y+b],[p.x,p.y+2*b],[p.x-a,p.y+b]],t.top,'#29485a66');poly([[p.x-a,p.y+b],[p.x,p.y+2*b],[p.x,p.y+2*b+c],[p.x-a,p.y+b+c]],t.left);poly([[p.x,p.y+2*b],[p.x+a,p.y+b],[p.x+a,p.y+b+c],[p.x,p.y+2*b+c]],t.right)}
+function drawPlayer(pl){let p=project(pl.x,pl.y,(map[pl.x]?.[pl.y]?.h)||0);ctx.fillStyle='#1d304a55';ctx.beginPath();ctx.ellipse(p.x,p.y+8,12,5,0,0,Math.PI*2);ctx.fill();ctx.fillStyle='#283b51';ctx.fillRect(p.x-6,p.y-15,5,14);ctx.fillRect(p.x+1,p.y-15,5,14);ctx.fillStyle=pl.color;ctx.fillRect(p.x-9,p.y-32,18,19);ctx.fillStyle='#f5c8a4';ctx.fillRect(p.x-7,p.y-46,14,14);ctx.fillStyle='#273044';ctx.fillRect(p.x-8,p.y-48,16,5);ctx.fillStyle='white';ctx.font='bold 11px system-ui';ctx.textAlign='center';ctx.fillText(pl.name,p.x,p.y-54)}
+function draw(){ctx.clearRect(0,0,W,H);let sky=ctx.createLinearGradient(0,0,0,H);sky.addColorStop(0,'#9ad7e8');sky.addColorStop(1,'#d6edcd');ctx.fillStyle=sky;ctx.fillRect(0,0,W,H);ctx.fillStyle='#a1d4b1';ctx.beginPath();ctx.moveTo(0,240);for(let x=0;x<=W;x+=30)ctx.lineTo(x,210+Math.sin(x*.017)*22+Math.sin(x*.041)*10);ctx.lineTo(W,H);ctx.lineTo(0,H);ctx.fill();
+for(let d=0;d<2*N-1;d++)for(let x=Math.max(0,d-N+1);x<=Math.min(N-1,d);x++){let y=d-x,c=map[x]?.[y];if(!c)continue;let p=project(x,y);poly([[p.x,p.y],[p.x+22,p.y+11],[p.x,p.y+22],[p.x-22,p.y+11]],'#7ea87a','#426b6160');for(let z=0;z<c.h;z++)cube(x,y,z,c.type);if(c.h>0)cube(x,y,c.h,c.type)}
+for(let pl of [player,friend]){let p=project(pl.x,pl.y);poly([[p.x,p.y],[p.x+22,p.y+11],[p.x,p.y+22],[p.x-22,p.y+11]],'transparent',pl.color)}drawPlayer(player);drawPlayer(friend);ctx.fillStyle='#203b4caa';ctx.font='12px system-ui';ctx.textAlign='left';ctx.fillText('WORLD '+N+' × '+N+'  •  BLOCKS: '+map.flat().reduce((n,c)=>n+c.h,0),14,H-15)}
+function send(data){if(conn&&conn.open){try{conn.send(data)}catch(e){}}}
+function receive(data){if(!data||!data.type)return;if(data.type==='move'){friend.x=Math.max(0,Math.min(N-1,data.player.x));friend.y=Math.max(0,Math.min(N-1,data.player.y));draw()}else if(data.type==='block'){if(map[data.x]?.[data.y]){map[data.x][data.y]=data.cell;draw()}}else if(data.type==='world'){if(!isHost&&Array.isArray(data.map)){map=data.map;friend=data.friend||friend;draw()}}else if(data.type==='hello'){send({type:'world',map,friend:player});say('Friend connected! Build together.');setStatus('Online — 2 players',true)}}
+function setupConnection(c){conn=c;c.on('open',()=>{connected=true;setStatus('Online — 2 players',true);say('Connected! Your blocks and movements are shared.');send({type:'hello'});send({type:'move',player})});c.on('data',receive);c.on('close',()=>{connected=false;setStatus('Friend disconnected');say('Connection closed. Reconnect using the room code.')});c.on('error',e=>{setStatus('Connection error');say('Connection error: '+(e.message||'try reconnecting'))})}
+function cleanup(){try{if(conn)conn.close();if(peer)peer.destroy()}catch(e){}conn=null;peer=null;connected=false;isHost=false;roomCode.textContent='—';setStatus('Not connected');}
+document.getElementById('host').onclick=()=>{cleanup();if(!window.Peer){say('Could not load PeerJS. Check your internet connection or browser extensions.');return}isHost=true;setStatus('Creating room…');say('Connecting to the room service…');peer=new Peer(undefined,{debug:1});peer.on('open',id=>{roomCode.textContent=id;document.getElementById('joinCode').value='';setStatus('Room ready — waiting for friend',true);say('Send this room code to your friend. Keep this tab open.');});peer.on('connection',c=>{if(conn){c.close();return}setupConnection(c)});peer.on('error',e=>{setStatus('Room error');say('Could not create room: '+e.type+'. Try again or refresh.')})};
+document.getElementById('join').onclick=()=>{let id=document.getElementById('joinCode').value.trim();if(!id){say('Enter your friend’s room code first.');return}cleanup();if(!window.Peer){say('Could not load PeerJS. Check your internet connection.');return}setStatus('Joining room…');say('Connecting to your friend…');peer=new Peer(undefined,{debug:1});peer.on('open',()=>{conn=peer.connect(id,{reliable:true});setupConnection(conn)});peer.on('error',e=>{setStatus('Could not join');say('Join failed ('+e.type+'). Check the code and try again.')})};
+document.getElementById('disconnect').onclick=()=>{cleanup();say('Disconnected. Create or join a room to play online.')};
+document.getElementById('newWorld').onclick=()=>{if(confirm('Generate a new world for everyone connected?'))newMap()};
+document.querySelectorAll('[data-b]').forEach(b=>b.onclick=()=>{selected=b.dataset.b;say('Selected '+selected+'. Walk to a tile and press Q to place.')});
+function move(dx,dy){let x=Math.max(0,Math.min(N-1,player.x+dx)),y=Math.max(0,Math.min(N-1,player.y+dy));player.x=x;player.y=y;draw();send({type:'move',player:{x,y}})}
+function block(place){let c=map[player.x][player.y];if(place){if(c.h>=5){say('Maximum tower height is 5 blocks.');return}c.h++;c.type=selected}else{if(c.h<=0){say('No raised block here. Walk to a block you built.');return}c.h--}draw();send({type:'block',x:player.x,y:player.y,cell:{...c}})}
+window.addEventListener('keydown',e=>{let k=e.key.toLowerCase();if(['w','a','s','d','q','e',' ','backspace','arrowup','arrowdown','arrowleft','arrowright'].includes(k)){e.preventDefault();if(held[k])return;held[k]=true;let dx=0,dy=0;if(k==='w'||k==='arrowup')dy=-1;else if(k==='s'||k==='arrowdown')dy=1;else if(k==='a'||k==='arrowleft')dx=-1;else if(k==='d'||k==='arrowright')dx=1;if(dx||dy)move(dx,dy);else if(k==='q'||k===' ')block(true);else if(k==='e'||k==='backspace')block(false)}});
+window.addEventListener('keyup',e=>held[e.key.toLowerCase()]=false);window.addEventListener('blur',()=>held={});
+cv.addEventListener('click',e=>{const r=cv.getBoundingClientRect(),mx=(e.clientX-r.left)*W/r.width,my=(e.clientY-r.top)*H/r.height;let best=null,dist=1e9;for(let x=0;x<N;x++)for(let y=0;y<N;y++){let p=project(x,y),d=Math.abs(mx-p.x)/22+Math.abs(my-(p.y+11))/11;if(d<dist){dist=d;best={x,y}}}if(best&&dist<2.2){player.x=best.x;player.y=best.y;draw();send({type:'move',player:{x:player.x,y:player.y}});say('Moved. Press Q to build or E to break.')}});
+newMap();
+})();
+</script>
+</body></html>
